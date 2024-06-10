@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 export network=$3
-export name="spore-dob-0"
+export name="spore-dob-1"
 
 if [ -z $network ]
 then

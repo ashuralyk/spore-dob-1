@@ -1,9 +1,9 @@
 # this is a deployment file for ckb testnet
 
 [[cells]]
-name = "spore-dob-0"
+name = "spore-dob-1"
 enable_type_id = true
-location = { file = "target/riscv64imac-unknown-none-elf/release/spore-dob-0" }
+location = { file = "target/riscv64imac-unknown-none-elf/release/spore-dob-1" }
 
 # The lock script set to output cells
 [lock]

@@ -1,144 +1,142 @@
-use core::cmp;
-
-use alloc::{format, string::String, vec::Vec};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 pub mod types;
+use crate::generated::{Color, Item, ItemUnion, ItemVec, RawImage, URI};
+use molecule::prelude::{Builder, Byte, Entity};
 use serde_json::Value;
-use types::{ArgsType, Error, Parameters, ParsedDNA, ParsedTrait, Pattern};
+use types::{
+    decode_trait_schema, DOB0Output, DOB0TraitValue, Error, ImageType, Parameters, ParsedTrait,
+    Pattern,
+};
 
-use self::types::decode_trait_schema;
+macro_rules! item {
+    ($itemty: ident, $value: ident) => {
+        $itemty::new_builder()
+            .set($value.as_bytes().iter().map(|v| Byte::new(*v)).collect())
+            .build()
+    };
+}
 
-// example:
-// argv[0] = efc2866a311da5b6dfcdfc4e3c22d00d024a53217ebc33855eeab1068990ed9d (hexed DNA string in Spore)
-// argv[1] = d48869363ff41a103b131a29f43...d7be6eeaf513c2c3ae056b9b8c2e1 (hexed pattern string in Cluster)
 pub fn dobs_parse_parameters(args: Vec<&[u8]>) -> Result<Parameters, Error> {
     if args.len() != 2 {
         return Err(Error::ParseInvalidArgCount);
     }
 
-    let spore_dna = {
-        let value = args[0];
-        if value.is_empty() || value.len() % 2 != 0 {
-            return Err(Error::ParseInvalidSporeDNA);
+    let dob0_output: Vec<DOB0Output> = {
+        let output = args[0];
+        if output.is_empty() {
+            return Err(Error::ParseInvalidDOB0Output);
         }
-        hex::decode(value).map_err(|_| Error::ParseInvalidSporeDNA)?
+        serde_json::from_slice(output).map_err(|_| Error::ParseInvalidDOB0Output)?
     };
-    let traits_base = {
+    let images_base = {
         let value = args[1];
         let traits_pool: Vec<Vec<Value>> =
             serde_json::from_slice(value).map_err(|_| Error::ParseInvalidTraitsBase)?;
         decode_trait_schema(traits_pool)?
     };
     Ok(Parameters {
-        spore_dna,
-        traits_base,
+        dob0_output,
+        images_base,
     })
 }
 
-pub fn dobs_decode(parameters: Parameters) -> Result<Vec<u8>, Error> {
+pub fn dobs_parse_syscall_parameters(
+    parameters: &Parameters,
+) -> Result<Vec<(String, ItemVec)>, Error> {
     let Parameters {
-        spore_dna,
-        traits_base,
+        dob0_output,
+        images_base,
     } = parameters;
 
-    let mut result = Vec::new();
-    for schema_base in traits_base.into_iter() {
-        let mut parsed_dna = ParsedDNA {
-            name: schema_base.name,
-            ..Default::default()
-        };
-        let byte_offset = cmp::min(schema_base.offset as usize, spore_dna.len());
-        let byte_end = cmp::min(byte_offset + schema_base.len as usize, spore_dna.len());
-        let mut dna_segment = spore_dna[byte_offset..byte_end].to_vec();
-        match schema_base.pattern {
-            Pattern::Raw => match schema_base.type_ {
-                ArgsType::Number => {
-                    let value = parse_u64(dna_segment)?;
-                    parsed_dna.traits.push(ParsedTrait::Number(value));
-                }
-                ArgsType::String => {
-                    let value = hex::encode(&dna_segment);
-                    parsed_dna
-                        .traits
-                        .push(ParsedTrait::String(format!("0x{value}")));
-                }
-            },
-            Pattern::Utf8 => {
-                if schema_base.type_ != ArgsType::String {
-                    return Err(Error::DecodeArgsTypeMismatch);
-                }
-                while dna_segment.last() == Some(&0) {
-                    dna_segment.pop();
-                }
-                let value =
-                    String::from_utf8(dna_segment).map_err(|_| Error::DecodeBadUTF8Format)?;
-                parsed_dna.traits.push(ParsedTrait::String(value));
-            }
-            Pattern::Range => {
-                let args = schema_base.args.ok_or(Error::DecodeMissingRangeArgs)?;
-                if args.len() != 2 {
-                    return Err(Error::DecodeInvalidRangeArgs);
-                }
-                if schema_base.type_ != ArgsType::Number {
-                    return Err(Error::DecodeArgsTypeMismatch);
-                }
-                let lowerbound = args[0]
-                    .parse::<u64>()
-                    .map_err(|_| Error::DecodeInvalidRangeArgs)?;
-                let upperbound = args[1]
-                    .parse::<u64>()
-                    .map_err(|_| Error::DecodeInvalidRangeArgs)?;
-                if upperbound <= lowerbound {
-                    return Err(Error::DecodeInvalidRangeArgs);
-                }
-                let offset = parse_u64(dna_segment)?;
-                let offset = offset % (upperbound - lowerbound);
-                parsed_dna
-                    .traits
-                    .push(ParsedTrait::Number(lowerbound + offset));
-            }
-            Pattern::Options => {
-                let args = schema_base.args.ok_or(Error::DecodeMissingOptionArgs)?;
-                if args.is_empty() {
-                    return Err(Error::DecodeInvalidOptionArgs);
-                }
-                let offset = parse_u64(dna_segment)?;
-                let offset = offset as usize % args.len();
-                match schema_base.type_ {
-                    ArgsType::String => {
-                        let value = args[offset].clone();
-                        parsed_dna.traits.push(ParsedTrait::String(value));
+    let syscall_parameters = images_base
+        .chunk_by(|a, b| a.name == b.name)
+        .map(|images| {
+            let mut items = ItemVec::new_builder();
+            let mut name = String::new();
+            for image in images.iter() {
+                name.clone_from(&image.name); // names are the same
+                let Some(value) = get_dob0_value_by_name(&image.dob0_trait, dob0_output) else {
+                    break;
+                };
+                let value = match image.pattern {
+                    Pattern::Options | Pattern::Range => {
+                        let args = image.args.as_ref().ok_or(Error::DecodeInvalidOptionArgs)?;
+                        get_dob1_value_by_dob0_value(args, value)?
                     }
-                    ArgsType::Number => {
-                        let value = args[offset]
-                            .parse::<u64>()
-                            .map_err(|_| Error::DecodeInvalidOptionArgs)?;
-                        parsed_dna.traits.push(ParsedTrait::Number(value));
-                    }
-                }
+                    Pattern::Raw => Some(
+                        value
+                            .get_string()
+                            .cloned()
+                            .map_err(|_| Error::DecodeInvalidRawValue)?,
+                    ),
+                };
+                let Some(value) = value else {
+                    break;
+                };
+                let item = match image.type_ {
+                    ImageType::ColorCode => ItemUnion::from(item!(Color, value)),
+                    ImageType::URI => ItemUnion::from(item!(URI, value)),
+                    ImageType::RawImage => ItemUnion::from(item!(RawImage, value)),
+                };
+                items = items.push(Item::new_builder().set(item).build());
             }
-        }
-        result.push(parsed_dna);
-    }
+            Ok((name, items.build()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(serde_json::to_string(&result).unwrap().into_bytes())
+    Ok(syscall_parameters)
 }
 
-fn parse_u64(dna_segment: Vec<u8>) -> Result<u64, Error> {
-    let offset = match dna_segment.len() {
-        1 => dna_segment[0] as u64,
-        2 => u16::from_le_bytes(dna_segment.clone().try_into().unwrap()) as u64,
-        3 | 4 => {
-            let mut buf = [0u8; 4];
-            buf[..dna_segment.len()].copy_from_slice(&dna_segment);
-            u32::from_le_bytes(buf) as u64
+fn get_dob0_value_by_name(trait_name: &str, dob0_output: &[DOB0Output]) -> Option<ParsedTrait> {
+    dob0_output.iter().find_map(|output| {
+        if output.name == trait_name {
+            output.traits.first().cloned()
+        } else {
+            None
         }
-        5..=8 => {
-            let mut buf = [0u8; 8];
-            buf[..dna_segment.len()].copy_from_slice(&dna_segment);
-            u64::from_le_bytes(buf)
+    })
+}
+
+fn get_dob1_value_by_dob0_value(
+    args: &BTreeMap<DOB0TraitValue, String>,
+    dob0_value: ParsedTrait,
+) -> Result<Option<String>, Error> {
+    for (key, value) in args {
+        match key {
+            DOB0TraitValue::Number(number) => {
+                let dob0_number = dob0_value.get_number()?;
+                if dob0_number == *number {
+                    return Ok(Some(value.clone()));
+                }
+            }
+            DOB0TraitValue::String(string) => {
+                let dob0_string = dob0_value.get_string()?;
+                if dob0_string == string {
+                    return Ok(Some(value.clone()));
+                }
+            }
+            DOB0TraitValue::Range(start, end) => {
+                let dob0_number = dob0_value.get_number()?;
+                if *start <= dob0_number && dob0_number <= *end {
+                    return Ok(Some(value.clone()));
+                }
+            }
+            DOB0TraitValue::Any => return Ok(Some(value.clone())),
         }
-        _ => return Err(Error::DecodeUnexpectedDNASegment),
-    };
-    Ok(offset)
+    }
+    Ok(None)
+}
+
+#[test]
+fn test_parse_syscall_parameters() {
+    // generated from `test_generate_basic_example` case
+    let dob0_output = "[{\"name\":\"Name\",\"traits\":[{\"String\":\"Ethan\"}]},{\"name\":\"Age\",\"traits\":[{\"Number\":23}]},{\"name\":\"Score\",\"traits\":[{\"Number\":136}]},{\"name\":\"DNA\",\"traits\":[{\"String\":\"0xaabbcc\"}]},{\"name\":\"URL\",\"traits\":[{\"String\":\"http://127.0.0.1:8090\"}]},{\"name\":\"Value\",\"traits\":[{\"Number\":13417386}]}]";
+    let images_base = "[[\"0\",\"color\",\"Name\",\"options\",[[\"Alice\",\"#0000FF\"],[\"Bob\",\"#00FF00\"],[\"Ethan\",\"#FF0000\"],[[\"*\"],\"#FFFFFF\"]]],[\"0\",\"uri\",\"Age\",\"range\",[[[0,50],\"btcfs://64f562d16e2a4a29e8c4821370fff473edfa22c26ef5808adb2404e39dc013e5i0\"],[[51,100],\"btcfs://c29fecd6d7d7eec0cb3a2b3dfdcb6aa26081db8f9851110b7c20a0f3c617299ai0\"],[[\"*\"],\"btcfs://a3589ddcf4b7a3c6da52fe6ae4ed3296f1ede139fe9127f2697ce0dcf2703b61i0\"]]],[\"1\",\"uri\",\"Score\",\"range\",[[[0,1000],\"btcfs://ba8b1bb9d8baee4bf24a06faa25b569410f2db96b4639f8e08ccbec05c88d79bi0\"],[[\"*\"],\"btcfs://b84ec0c770aa1961a3d9498ea8a67e1282532913fc1c13e3eaf5a48de2164fb9i0\"]]]]";
+
+    let args = vec![dob0_output.as_bytes(), images_base.as_bytes()];
+    let parameters = dobs_parse_parameters(args).expect("parse parameters failed");
+    let syscall_parameters =
+        dobs_parse_syscall_parameters(&parameters).expect("parse syscall parameters failed");
+    println!("{:?}", syscall_parameters);
 }

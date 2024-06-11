@@ -306,7 +306,7 @@ fn test_basic_trait_schema_encode_decode() {
             ),
         ),
         TraitSchema::new(
-            "1",
+            "0",
             ImageType::URI,
             "Score",
             Pattern::Range,
@@ -314,6 +314,26 @@ fn test_basic_trait_schema_encode_decode() {
                 vec![
                     (
                         DOB0TraitValue::Range(0, 1000),
+                        "btcfs://11d6cc654f4c0759bfee520966937a4304db2b33880c88c2a6c649e30c7b9aaei0".to_owned()
+                    ),
+                    (
+                        DOB0TraitValue::Any,
+                        "btcfs://e1484915b27e45b120239080fe5032580550ff9ff759eb26ee86bf8aaf90068bi0".to_owned(),
+                    )
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        ),
+        TraitSchema::new(
+            "1",
+            ImageType::URI,
+            "Value",
+            Pattern::Range,
+            Some(
+                vec![
+                    (
+                        DOB0TraitValue::Range(0, 100000),
                         "btcfs://11d6cc654f4c0759bfee520966937a4304db2b33880c88c2a6c649e30c7b9aaei0".to_owned()
                     ),
                     (

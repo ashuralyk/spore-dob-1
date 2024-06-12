@@ -64,6 +64,8 @@ pub struct Parameters {
 #[derive(serde::Serialize)]
 pub struct Image {
     pub name: String,
+    #[serde(rename = "type")]
+    pub type_: String,
     pub content: String,
 }
 

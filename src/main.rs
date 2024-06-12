@@ -4,7 +4,7 @@
 extern crate alloc;
 use core::ffi::CStr;
 
-use alloc::{format, string::String, vec, vec::Vec};
+use alloc::{borrow::ToOwned, format, string::String, vec, vec::Vec};
 use molecule::prelude::Entity;
 use spore_dob_1::decoder::{
     dobs_parse_parameters, dobs_parse_syscall_parameters,
@@ -106,6 +106,7 @@ unsafe extern "C" fn main(argc: u64, argv: *const *const i8) -> u64 {
             let base64_image = String::from_utf8(buffer).expect("Invalid UTF-8 sequence");
             Image {
                 name,
+                type_: "image/png;base64".to_owned(),
                 content: base64_image,
             }
         })

@@ -1,12 +1,11 @@
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
+use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, vec::Vec};
 
 pub mod types;
 use crate::generated::{Color, Item, ItemUnion, ItemVec, RawImage, URI};
 use molecule::prelude::{Builder, Byte, Entity};
 use serde_json::Value;
 use types::{
-    decode_trait_schema, DOB0Output, DOB0TraitValue, Error, ImageType, Parameters, ParsedTrait,
-    Pattern,
+    DOB0Output, DOB0TraitValue, Error, ImageType, Parameters, ParsedTrait, Pattern, TraitSchema,
 };
 
 macro_rules! item {
@@ -88,6 +87,82 @@ pub fn dobs_parse_syscall_parameters(
     Ok(syscall_parameters)
 }
 
+pub(crate) fn decode_trait_schema(traits_pool: Vec<Vec<Value>>) -> Result<Vec<TraitSchema>, Error> {
+    let traits_base = traits_pool
+        .into_iter()
+        .map(|schema| {
+            if schema.len() < 4 {
+                return Err(Error::SchemaInsufficientElements);
+            }
+            let name = schema[0].as_str().ok_or(Error::SchemaInvalidName)?;
+            let type_ = match schema[1].as_str().ok_or(Error::SchemaInvalidType)? {
+                "color" => ImageType::ColorCode,
+                "uri" => ImageType::URI,
+                "image" => ImageType::RawImage,
+                _ => return Err(Error::SchemaTypeMismatch),
+            };
+            let dob0_trait = schema[2].as_str().ok_or(Error::SchemaInvalidTraitName)?;
+            let pattern_str = schema[3].as_str().ok_or(Error::SchemaInvalidPattern)?;
+            let pattern = match (pattern_str, &type_) {
+                ("options", ImageType::ColorCode | ImageType::URI) => Pattern::Options,
+                ("range", ImageType::ColorCode | ImageType::URI) => Pattern::Range,
+                ("raw", ImageType::RawImage | ImageType::URI) => Pattern::Raw,
+                _ => return Err(Error::SchemaPatternMismatch),
+            };
+            let args = if let Some(args) = schema.get(4) {
+                let args = args
+                    .as_array()
+                    .ok_or(Error::SchemaInvalidArgs)?
+                    .iter()
+                    .map(|value| {
+                        let item = value.as_array().ok_or(Error::SchemaInvalidArgsElement)?;
+                        let (Some(trait_pattern), Some(dob1_value)) = (item.first(), item.get(1))
+                        else {
+                            return Err(Error::SchemaInvalidArgsElement);
+                        };
+                        let key = if trait_pattern.is_number() {
+                            DOB0TraitValue::Number(trait_pattern.as_u64().unwrap())
+                        } else if trait_pattern.is_string() {
+                            DOB0TraitValue::String(trait_pattern.as_str().unwrap().to_owned())
+                        } else if trait_pattern.is_array() {
+                            let range = trait_pattern.as_array().unwrap();
+                            if Some(Some("*")) == range.first().map(|v| v.as_str()) {
+                                DOB0TraitValue::Any
+                            } else {
+                                if range.len() != 2 {
+                                    return Err(Error::SchemaInvalidArgsElement);
+                                }
+                                DOB0TraitValue::Range(
+                                    range[0].as_u64().ok_or(Error::SchemaInvalidArgsElement)?,
+                                    range[1].as_u64().ok_or(Error::SchemaInvalidArgsElement)?,
+                                )
+                            }
+                        } else {
+                            return Err(Error::SchemaInvalidArgsElement);
+                        };
+                        let value = dob1_value
+                            .as_str()
+                            .ok_or(Error::SchemaInvalidArgsElement)?
+                            .to_owned();
+                        Ok((key, value))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, _>>()?;
+                Some(args)
+            } else {
+                None
+            };
+            Ok(TraitSchema {
+                name: name.to_owned(),
+                type_,
+                dob0_trait: dob0_trait.to_owned(),
+                pattern,
+                args,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(traits_base)
+}
+
 fn get_dob0_value_by_name(trait_name: &str, dob0_output: &[DOB0Output]) -> Option<ParsedTrait> {
     dob0_output.iter().find_map(|output| {
         if output.name == trait_name {
@@ -126,17 +201,4 @@ fn get_dob1_value_by_dob0_value(
         }
     }
     Ok(None)
-}
-
-#[test]
-fn test_parse_syscall_parameters() {
-    // generated from `test_generate_basic_example` case
-    let dob0_output = "[{\"name\":\"Name\",\"traits\":[{\"String\":\"Ethan\"}]},{\"name\":\"Age\",\"traits\":[{\"Number\":23}]},{\"name\":\"Score\",\"traits\":[{\"Number\":136}]},{\"name\":\"DNA\",\"traits\":[{\"String\":\"0xaabbcc\"}]},{\"name\":\"URL\",\"traits\":[{\"String\":\"http://127.0.0.1:8090\"}]},{\"name\":\"Value\",\"traits\":[{\"Number\":13417386}]}]";
-    let images_base = "[[\"0\",\"color\",\"Name\",\"options\",[[\"Alice\",\"#0000FF\"],[\"Bob\",\"#00FF00\"],[\"Ethan\",\"#FF0000\"],[[\"*\"],\"#FFFFFF\"]]],[\"0\",\"uri\",\"Age\",\"range\",[[[0,50],\"btcfs://b2f4560f17679d3e3fca66209ac425c660d28a252ef72444c3325c6eb0364393i0\"],[[51,100],\"btcfs://eb3910b3e32a5ed9460bd0d75168c01ba1b8f00cc0faf83e4d8b67b48ea79676i0\"],[[\"*\"],\"btcfs://11b6303eb7d887d7ade459ac27959754cd55f9f9e50345ced8e1e8f47f4581fai0\"]]],[\"0\",\"uri\",\"Score\",\"range\",[[[0,1000],\"btcfs://11d6cc654f4c0759bfee520966937a4304db2b33880c88c2a6c649e30c7b9aaei0\"],[[\"*\"],\"btcfs://e1484915b27e45b120239080fe5032580550ff9ff759eb26ee86bf8aaf90068bi0\"]]],[\"1\",\"uri\",\"Value\",\"range\",[[[0,100000],\"btcfs://11d6cc654f4c0759bfee520966937a4304db2b33880c88c2a6c649e30c7b9aaei0\"],[[\"*\"],\"btcfs://e1484915b27e45b120239080fe5032580550ff9ff759eb26ee86bf8aaf90068bi0\"]]]]";
-
-    let args = vec![dob0_output.as_bytes(), images_base.as_bytes()];
-    let parameters = dobs_parse_parameters(args).expect("parse parameters failed");
-    let syscall_parameters =
-        dobs_parse_syscall_parameters(&parameters).expect("parse syscall parameters failed");
-    println!("{:?}", syscall_parameters);
 }

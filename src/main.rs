@@ -2,9 +2,9 @@
 #![no_std]
 
 extern crate alloc;
+use alloc::{borrow::ToOwned, format, vec, vec::Vec};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use core::ffi::CStr;
-
-use alloc::{borrow::ToOwned, format, string::String, vec, vec::Vec};
 use molecule::prelude::Entity;
 use spore_dob_1::decoder::{
     dobs_parse_parameters, dobs_parse_syscall_parameters,
@@ -103,11 +103,10 @@ unsafe extern "C" fn main(argc: u64, argv: *const *const i8) -> u64 {
             syscall_combine_image(&mut buffer, &mut buffer_size, pattern.as_slice()); // determine real buffer size
             buffer.resize(buffer_size as usize, 0);
             syscall_combine_image(&mut buffer, &mut buffer_size, pattern.as_slice()); // fill buffer
-            let base64_image = String::from_utf8(buffer).expect("Invalid UTF-8 sequence");
             Image {
                 name,
                 type_: "image/png;base64".to_owned(),
-                content: base64_image,
+                content: STANDARD.encode(buffer),
             }
         })
         .collect::<Vec<_>>();

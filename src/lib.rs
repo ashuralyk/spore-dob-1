@@ -3,3 +3,6 @@
 extern crate alloc;
 pub mod decoder;
 pub mod generated;
+
+#[cfg(test)]
+mod tests;

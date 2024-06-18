@@ -1,12 +1,10 @@
-use alloc::{borrow::ToOwned, collections::BTreeMap, string::String, vec::Vec};
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
 
 pub mod types;
 use crate::generated::{Color, Item, ItemUnion, ItemVec, RawImage, URI};
 use molecule::prelude::{Builder, Byte, Entity};
 use serde_json::Value;
-use types::{
-    DOB0Output, DOB0TraitValue, Error, ImageType, Parameters, ParsedTrait, Pattern, TraitSchema,
-};
+use types::{DOB0Output, Error, ImageType, Parameters, ParsedTrait, Pattern, TraitSchema};
 
 macro_rules! item {
     ($itemty: ident, $value: ident) => {
@@ -109,48 +107,7 @@ pub(crate) fn decode_trait_schema(traits_pool: Vec<Vec<Value>>) -> Result<Vec<Tr
                 ("raw", ImageType::RawImage | ImageType::URI) => Pattern::Raw,
                 _ => return Err(Error::SchemaPatternMismatch),
             };
-            let args = if let Some(args) = schema.get(4) {
-                let args = args
-                    .as_array()
-                    .ok_or(Error::SchemaInvalidArgs)?
-                    .iter()
-                    .map(|value| {
-                        let item = value.as_array().ok_or(Error::SchemaInvalidArgsElement)?;
-                        let (Some(trait_pattern), Some(dob1_value)) = (item.first(), item.get(1))
-                        else {
-                            return Err(Error::SchemaInvalidArgsElement);
-                        };
-                        let key = if trait_pattern.is_number() {
-                            DOB0TraitValue::Number(trait_pattern.as_u64().unwrap())
-                        } else if trait_pattern.is_string() {
-                            DOB0TraitValue::String(trait_pattern.as_str().unwrap().to_owned())
-                        } else if trait_pattern.is_array() {
-                            let range = trait_pattern.as_array().unwrap();
-                            if Some(Some("*")) == range.first().map(|v| v.as_str()) {
-                                DOB0TraitValue::Any
-                            } else {
-                                if range.len() != 2 {
-                                    return Err(Error::SchemaInvalidArgsElement);
-                                }
-                                DOB0TraitValue::Range(
-                                    range[0].as_u64().ok_or(Error::SchemaInvalidArgsElement)?,
-                                    range[1].as_u64().ok_or(Error::SchemaInvalidArgsElement)?,
-                                )
-                            }
-                        } else {
-                            return Err(Error::SchemaInvalidArgsElement);
-                        };
-                        let value = dob1_value
-                            .as_str()
-                            .ok_or(Error::SchemaInvalidArgsElement)?
-                            .to_owned();
-                        Ok((key, value))
-                    })
-                    .collect::<Result<BTreeMap<_, _>, _>>()?;
-                Some(args)
-            } else {
-                None
-            };
+            let args = schema.get(4).cloned();
             Ok(TraitSchema {
                 name: name.to_owned(),
                 type_,
@@ -174,31 +131,48 @@ fn get_dob0_value_by_name(trait_name: &str, dob0_output: &[DOB0Output]) -> Optio
 }
 
 fn get_dob1_value_by_dob0_value(
-    args: &BTreeMap<DOB0TraitValue, String>,
-    dob0_value: ParsedTrait,
+    args: &Value,
+    parsed_dob0_value: ParsedTrait,
 ) -> Result<Option<String>, Error> {
-    for (key, value) in args {
-        match key {
-            DOB0TraitValue::Number(number) => {
-                let dob0_number = dob0_value.get_number()?;
-                if dob0_number == *number {
-                    return Ok(Some(value.clone()));
+    for pattern in args.as_array().ok_or(Error::SchemaInvalidArgs)? {
+        let item = pattern.as_array().ok_or(Error::SchemaInvalidArgsElement)?;
+        let (Some(dob0_value), Some(dob1_value)) = (item.first(), item.get(1)) else {
+            return Err(Error::SchemaInvalidArgsElement);
+        };
+        let dob1_value = dob1_value
+            .as_str()
+            .ok_or(Error::SchemaInvalidArgsElement)?
+            .to_owned();
+        if dob0_value.is_number() {
+            let value = parsed_dob0_value.get_number()?;
+            if value == dob0_value.as_u64().unwrap() {
+                return Ok(Some(dob1_value));
+            }
+        } else if dob0_value.is_string() {
+            let value = parsed_dob0_value.get_string()?;
+            if value == dob0_value.as_str().unwrap() {
+                return Ok(Some(dob1_value));
+            }
+        } else if dob0_value.is_array() {
+            let range = dob0_value.as_array().unwrap();
+            if Some(Some("*")) == range.first().map(|v| v.as_str()) {
+                return Ok(Some(dob1_value));
+            } else {
+                if range.len() != 2 {
+                    return Err(Error::SchemaInvalidArgsElement);
+                }
+                let (start, end) = (
+                    range[0].as_u64().ok_or(Error::SchemaInvalidArgsElement)?,
+                    range[1].as_u64().ok_or(Error::SchemaInvalidArgsElement)?,
+                );
+                let value = parsed_dob0_value.get_number()?;
+                if start <= value && value <= end {
+                    return Ok(Some(dob1_value));
                 }
             }
-            DOB0TraitValue::String(string) => {
-                let dob0_string = dob0_value.get_string()?;
-                if dob0_string == string {
-                    return Ok(Some(value.clone()));
-                }
-            }
-            DOB0TraitValue::Range(start, end) => {
-                let dob0_number = dob0_value.get_number()?;
-                if *start <= dob0_number && dob0_number <= *end {
-                    return Ok(Some(value.clone()));
-                }
-            }
-            DOB0TraitValue::Any => return Ok(Some(value.clone())),
-        }
+        } else {
+            return Err(Error::SchemaInvalidArgsElement);
+        };
     }
     Ok(None)
 }

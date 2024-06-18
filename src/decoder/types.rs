@@ -1,4 +1,5 @@
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
+use alloc::{string::String, vec::Vec};
+use serde_json::Value;
 
 #[repr(u64)]
 #[cfg_attr(test, derive(Debug))]
@@ -90,15 +91,6 @@ pub enum Pattern {
     Raw,
 }
 
-#[cfg_attr(test, derive(serde::Serialize, Clone, Debug))]
-#[derive(serde::Deserialize, PartialOrd, PartialEq, Eq, Ord)]
-pub enum DOB0TraitValue {
-    String(String),
-    Number(u64),
-    Range(u64, u64),
-    Any,
-}
-
 #[cfg_attr(test, derive(serde::Serialize, Clone, PartialEq, Debug))]
 #[derive(serde::Deserialize)]
 pub struct TraitSchema {
@@ -106,5 +98,5 @@ pub struct TraitSchema {
     pub type_: ImageType,
     pub dob0_trait: String,
     pub pattern: Pattern,
-    pub args: Option<BTreeMap<DOB0TraitValue, String>>,
+    pub args: Option<Value>,
 }
